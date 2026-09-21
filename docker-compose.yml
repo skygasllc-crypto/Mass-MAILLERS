@@ -1,0 +1,13 @@
+services:
+  mailer:
+    build: .
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0          # inside the container only
+      PORT: 8000
+    ports:
+      - "127.0.0.1:8000:8000"  # reachable from this computer only
+    volumes:
+      - ./data:/app/data
+      - ./uploads:/app/uploads
+    restart: unless-stopped

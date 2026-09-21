@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mass Mailer</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+
+<!-- ============================ LOGIN ============================ -->
+<div id="login-view" class="login-view" hidden>
+  <form id="login-form" class="card login-card">
+    <h1>Mass Mailer</h1>
+    <p class="muted" id="login-intro">Sign in to continue.</p>
+    <label for="login-email">Email</label>
+    <input id="login-email" type="text" autocomplete="username" required maxlength="254">
+    <label for="login-password" class="gap">Password</label>
+    <input id="login-password" type="password" autocomplete="current-password" required maxlength="200">
+    <div id="register-extra" hidden>
+      <label for="login-password2" class="gap">Repeat password</label>
+      <input id="login-password2" type="password" autocomplete="new-password" maxlength="200">
+      <small class="muted">At least 8 characters.</small>
+    </div>
+    <button type="submit" id="login-submit" class="btn primary block">Sign in</button>
+    <p id="login-error" class="msg error" hidden></p>
+    <p class="switch" id="auth-switch">No account yet? <button type="button" class="btn link" id="auth-toggle">Create an account</button></p>
+  </form>
+</div>
+
+<!-- ============================ APP ============================ -->
+<div id="app-view" hidden>
+  <header class="topbar">
+    <div class="brand">Mass Mailer</div>
+    <span id="mode-badge" class="badge"></span>
+    <span class="user-box">
+      <span id="user-email" class="user-email"></span>
+      <span id="role-badge" class="badge admin" hidden>ADMIN</span>
+      <button id="password-btn" class="btn link">Change password</button>
+      <button id="logout-btn" class="btn link">Sign out</button>
+    </span>
+  </header>
+
+  <div id="dev-banner" class="banner" hidden>
+    <strong>Development mode.</strong> No real emails are sent — every message goes to the
+    <a href="#mailbox-card">test mailbox</a> below. Set <code>EMAIL_MODE=production</code> to send for real.
+  </div>
+
+  <main class="layout">
+    <!-- ---------------- ADMIN: USERS ---------------- -->
+    <section class="card span-all" id="users-card" hidden>
+      <h2>Users <small class="muted">(administrator)</small></h2>
+      <p class="muted small">Anyone can create an account. Each user has their own SMTP settings, templates,
+        history and do-not-send list. Disabled users are signed out immediately and cannot sign in.</p>
+      <div class="table-wrap">
+        <table class="table">
+          <thead><tr><th>Email</th><th>Role</th><th>Status</th><th>Registered</th><th>Last sign-in</th><th>Sends</th><th>Emails sent</th><th></th></tr></thead>
+          <tbody id="users-rows"></tbody>
+        </table>
+      </div>
+      <p id="users-msg" class="msg" hidden></p>
+    </section>
+
+    <!-- ---------------- SMTP SETTINGS ---------------- -->
+    <section class="card" id="smtp-card">
+      <h2><span class="step">1</span> SMTP Settings</h2>
+      <form id="smtp-form" autocomplete="off">
+        <div class="grid-2">
+          <div class="field span-2">
+            <label for="smtp-host">SMTP Host</label>
+            <input id="smtp-host" name="host" placeholder="smtp.example.com" maxlength="255">
+          </div>
+          <div class="field">
+            <label for="smtp-port">SMTP Port</label>
+            <input id="smtp-port" name="port" type="number" min="1" max="65535" value="587">
+          </div>
+          <div class="field">
+            <label for="smtp-security">Security</label>
+            <select id="smtp-security" name="security">
+              <option value="starttls">STARTTLS (587)</option>
+              <option value="ssl">SSL/TLS (465)</option>
+              <option value="none">None (25, not encrypted)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="smtp-username">Username</label>
+            <input id="smtp-username" name="username" autocomplete="off" maxlength="320">
+          </div>
+          <div class="field">
+            <label for="smtp-password">Password</label>
+            <input id="smtp-password" name="password" type="password" autocomplete="new-password" maxlength="1000">
+            <small id="password-hint" class="muted"></small>
+          </div>
+        </div>
+
+        <h3>Sender</h3>
+        <div class="grid-2">
+          <div class="field">
+            <label for="from-name">From Name</label>
+            <input id="from-name" name="from_name" placeholder="Company Team" maxlength="100">
+          </div>
+          <div class="field">
+            <label for="from-email">From Email</label>
+            <input id="from-email" name="from_email" type="email" placeholder="newsletter@example.com" maxlength="254">
+          </div>
+          <div class="field">
+            <label for="reply-to">Reply-To</label>
+            <input id="reply-to" name="reply_to" type="email" placeholder="sales@example.com" maxlength="254">
+            <small class="muted">Replies go here. Leave empty to use the From email.</small>
+          </div>
+          <div class="field">
+            <label for="to-address">Visible "To" address</label>
+            <input id="to-address" name="to_address" type="email" placeholder="(defaults to From email)" maxlength="254">
+            <small class="muted">Shown to everyone. Real recipients are hidden (BCC).</small>
+          </div>
+        </div>
+
+        <h3>Deliverability</h3>
+        <p class="muted small">Helps Gmail, Yahoo, Outlook and others accept your email: every message gets a
+          <code>List-Unsubscribe</code> header so their built-in “Unsubscribe” button appears.</p>
+        <div class="grid-2">
+          <div class="field">
+            <label for="unsub-email">Unsubscribe email</label>
+            <input id="unsub-email" type="email" placeholder="(defaults to Reply-To)" maxlength="254">
+          </div>
+          <div class="field">
+            <label for="unsub-url">One-click unsubscribe link <span class="muted">(optional)</span></label>
+            <input id="unsub-url" type="url" placeholder="https://yourcompany.com/unsubscribe" maxlength="500">
+          </div>
+          <div class="field span-2">
+            <label for="company-address">Company name &amp; postal address <span class="muted">(shown in footer)</span></label>
+            <input id="company-address" placeholder="Example Ltd, 1 Main Street, City" maxlength="300">
+          </div>
+        </div>
+        <label class="check"><input type="checkbox" id="add-footer"> Add an unsubscribe footer to every email (recommended)</label>
+
+        <div class="actions">
+          <button type="submit" class="btn">Save settings</button>
+          <button type="button" id="smtp-test-btn" class="btn primary">Test SMTP Connection</button>
+          <span id="smtp-status" class="status-pill"></span>
+        </div>
+        <ul id="smtp-steps" class="steps" hidden></ul>
+        <p id="smtp-msg" class="msg" hidden></p>
+        <div class="actions">
+          <button type="button" id="deliv-btn" class="btn">Check deliverability</button>
+        </div>
+        <ul id="deliv-list" class="checks" hidden></ul>
+      </form>
+    </section>
+
+    <!-- ---------------- RECIPIENTS ---------------- -->
+    <section class="card" id="recipients-card">
+      <h2><span class="step">2</span> Recipients</h2>
+      <label for="recipients">Paste email addresses (separated by commas, semicolons, spaces or new lines)</label>
+      <textarea id="recipients" rows="9" spellcheck="false"
+                placeholder="john@example.com, mary@example.com&#10;Jane Smith &lt;jane@example.com&gt;"></textarea>
+      <div class="actions">
+        <label class="btn file-btn">Import CSV
+          <input id="csv-input" type="file" accept=".csv,text/csv,text/plain" hidden>
+        </label>
+        <button id="clean-btn" type="button" class="btn">Clean list</button>
+        <button id="suppress-btn" type="button" class="btn">Do-not-send list (<span id="suppress-count">0</span>)</button>
+        <button id="clear-recipients-btn" type="button" class="btn link">Clear</button>
+      </div>
+      <p id="import-msg" class="msg" hidden></p>
+      <div class="stats">
+        <div><span id="st-total">0</span><small>Total</small></div>
+        <div class="ok"><span id="st-valid">0</span><small>Valid</small></div>
+        <div class="bad"><span id="st-invalid">0</span><small>Invalid</small></div>
+        <div class="warn"><span id="st-dupes">0</span><small>Duplicates</small></div>
+        <div class="warn"><span id="st-suppressed">0</span><small>Do-not-send</small></div>
+        <div class="ready"><span id="st-ready">0</span><small>Ready to send</small></div>
+      </div>
+      <p id="limit-msg" class="msg error" hidden></p>
+      <details id="suppressed-box" hidden>
+        <summary>Show skipped (do-not-send) addresses</summary>
+        <ul id="suppressed-list" class="plain-list"></ul>
+      </details>
+      <details id="invalid-box" hidden>
+        <summary>Show invalid addresses</summary>
+        <ul id="invalid-list" class="plain-list"></ul>
+      </details>
+    </section>
+
+    <!-- ---------------- COMPOSE ---------------- -->
+    <section class="card span-all" id="compose-card">
+      <h2><span class="step">3</span> Compose Email</h2>
+      <div class="template-bar">
+        <label for="template-select">Template</label>
+        <select id="template-select"><option value="">— Saved templates —</option></select>
+        <button type="button" id="tpl-load" class="btn">Load</button>
+        <button type="button" id="tpl-save" class="btn">Save as template…</button>
+        <button type="button" id="tpl-update" class="btn">Update</button>
+        <button type="button" id="tpl-delete" class="btn link danger-link">Delete</button>
+      </div>
+      <p id="tpl-msg" class="msg" hidden></p>
+      <p class="sender-line muted">From: <strong id="sum-from">—</strong> · Reply-To: <strong id="sum-reply">—</strong>
+        <a href="#smtp-card" class="small-link">change</a></p>
+      <div class="field">
+        <label for="subject">Subject</label>
+        <input id="subject" maxlength="900" placeholder="Important Business Update">
+      </div>
+      <div class="compose-bar">
+        <div class="segmented" role="radiogroup" aria-label="Message format">
+          <label><input type="radio" name="format" value="html" checked> HTML</label>
+          <label><input type="radio" name="format" value="text"> Plain text</label>
+        </div>
+        <div id="toolbar" class="toolbar" aria-label="Formatting">
+          <button type="button" data-wrap="b" title="Bold"><b>B</b></button>
+          <button type="button" data-wrap="i" title="Italic"><i>I</i></button>
+          <button type="button" data-wrap="u" title="Underline"><u>U</u></button>
+          <button type="button" data-wrap="p" title="Paragraph">¶</button>
+          <button type="button" data-wrap="h2" title="Heading">H</button>
+          <button type="button" data-action="link" title="Link">Link</button>
+          <button type="button" data-action="list" title="Bulleted list">• List</button>
+          <button type="button" data-action="br" title="Line break">↵</button>
+        </div>
+        <button type="button" id="preview-btn" class="btn">Preview</button>
+      </div>
+      <textarea id="body" rows="12" placeholder="Hello,&#10;&#10;We would like to introduce our company and services.&#10;&#10;Best regards,&#10;Company Team"></textarea>
+      <small class="muted">HTML mode: basic tags such as &lt;b&gt;, &lt;p&gt;, &lt;a href&gt; are allowed. Text without tags is converted to paragraphs automatically. A plain-text version is always included.</small>
+      <div class="personalize">
+        <label class="check"><input type="checkbox" id="personalize"> Personalize with <code>{{name}}</code></label>
+        <span id="personalize-opts" hidden>
+          <label for="name-fallback">If name is missing, use</label>
+          <input id="name-fallback" value="there" maxlength="100" class="inline-input">
+        </span>
+        <small class="muted" id="personalize-hint">Each recipient then gets their own copy addressed only to them. Names come from CSV import or <code>Name &lt;email&gt;</code> lines.</small>
+      </div>
+    </section>
+
+    <!-- ---------------- ATTACHMENTS ---------------- -->
+    <section class="card" id="attachments-card">
+      <h2><span class="step">4</span> Attachments</h2>
+      <label class="btn file-btn">Add Attachment
+        <input id="attach-input" type="file" multiple hidden>
+      </label>
+      <small id="attach-limits" class="muted block"></small>
+      <p id="attach-msg" class="msg" hidden></p>
+      <ul id="attach-list" class="attach-list"></ul>
+      <p class="muted">Total attachments: <strong id="attach-total">0 KB</strong></p>
+    </section>
+
+    <!-- ---------------- SEND ---------------- -->
+    <section class="card" id="send-card">
+      <h2><span class="step">5</span> Send</h2>
+      <div class="grid-2">
+        <div class="field">
+          <label for="batch-size">BCC batch size</label>
+          <input id="batch-size" type="number" min="1" value="100">
+          <small id="batch-info" class="muted"></small>
+        </div>
+        <div class="field">
+          <label for="speed">Sending mode</label>
+          <select id="speed">
+            <option value="conservative">Conservative</option>
+            <option value="normal">Normal</option>
+            <option value="fast">Fast</option>
+          </select>
+          <small id="speed-info" class="muted"></small>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="delivery">Delivery</label>
+        <select id="delivery">
+          <option value="bcc">BCC batches – one message per batch</option>
+          <option value="individual">Individual messages – each recipient gets their own copy (best inbox placement)</option>
+        </select>
+        <small id="delivery-info" class="muted"></small>
+      </div>
+
+      <h3>Send test</h3>
+      <div class="inline-row">
+        <input id="test-email" type="email" placeholder="test@example.com" maxlength="254" aria-label="Test email address">
+        <button id="test-btn" type="button" class="btn">Send Test</button>
+      </div>
+      <p id="test-msg" class="msg" hidden></p>
+
+      <button id="send-btn" type="button" class="btn primary huge">SEND EMAIL</button>
+      <p id="send-msg" class="msg error" hidden></p>
+    </section>
+
+    <!-- ---------------- PROGRESS / RESULTS ---------------- -->
+    <section class="card span-all" id="progress-card" hidden>
+      <h2 id="progress-title">Sending…</h2>
+      <div class="progress"><div id="progress-bar" class="progress-bar"></div></div>
+      <div class="progress-pct" id="progress-pct">0%</div>
+      <div class="stats">
+        <div><span id="pg-completed">0 / 0</span><small>Completed</small></div>
+        <div class="ok"><span id="pg-success">0</span><small>Successful</small></div>
+        <div class="bad"><span id="pg-failed">0</span><small>Failed</small></div>
+        <div><span id="pg-batch">0 / 0</span><small>Current batch</small></div>
+      </div>
+      <p class="status-line">Current status: <strong id="pg-status">—</strong></p>
+      <div class="actions" id="running-actions">
+        <button id="cancel-btn" type="button" class="btn danger">Stop sending</button>
+      </div>
+      <div class="actions" id="done-actions" hidden>
+        <button id="view-failed-btn" type="button" class="btn">View Failed</button>
+        <a id="export-failed-btn" class="btn" href="#">Export Failed</a>
+        <a id="export-all-btn" class="btn" href="#">Export Results</a>
+        <button id="new-email-btn" type="button" class="btn primary">New Email</button>
+      </div>
+    </section>
+
+    <!-- ---------------- DEV MAILBOX ---------------- -->
+    <section class="card span-all" id="mailbox-card" hidden>
+      <h2>Test Mailbox <small class="muted">(development mode – nothing was really sent)</small></h2>
+      <div class="actions">
+        <button id="mailbox-refresh" type="button" class="btn">Refresh</button>
+        <button id="mailbox-clear" type="button" class="btn link">Empty mailbox</button>
+      </div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead><tr><th>#</th><th>Time</th><th>Subject</th><th>Envelope recipients (BCC)</th><th></th></tr></thead>
+          <tbody id="mailbox-rows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- ============================ MODALS ============================ -->
+<dialog id="confirm-dialog" class="modal">
+  <h2>READY TO SEND</h2>
+  <dl class="summary" id="confirm-summary"></dl>
+  <ul id="confirm-warnings" class="warn-list"></ul>
+  <div class="actions end">
+    <button type="button" class="btn" id="confirm-cancel">Cancel</button>
+    <button type="button" class="btn primary" id="confirm-send">SEND NOW</button>
+  </div>
+</dialog>
+
+<dialog id="suppress-dialog" class="modal wide">
+  <h2>Do-not-send list</h2>
+  <p class="muted">These addresses are always skipped. People who unsubscribe (they reply or email your
+    unsubscribe address) belong here. Addresses that bounce as “mailbox does not exist” are added automatically.</p>
+  <label for="suppress-input">Add addresses</label>
+  <textarea id="suppress-input" rows="4" spellcheck="false" placeholder="someone@example.com, other@example.com"></textarea>
+  <div class="actions">
+    <button type="button" id="suppress-add" class="btn primary">Add to list</button>
+    <span id="suppress-msg" class="muted"></span>
+  </div>
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>Email</th><th>Reason</th><th>Added</th><th></th></tr></thead>
+      <tbody id="suppress-rows"></tbody>
+    </table>
+  </div>
+  <div class="actions end"><button type="button" class="btn" data-close>Close</button></div>
+</dialog>
+
+<dialog id="password-dialog" class="modal">
+  <h2>Change password</h2>
+  <form id="password-form">
+    <label for="pw-current">Current password</label>
+    <input id="pw-current" type="password" autocomplete="current-password" required>
+    <label for="pw-new" class="gap">New password</label>
+    <input id="pw-new" type="password" autocomplete="new-password" required>
+    <label for="pw-new2" class="gap">Repeat new password</label>
+    <input id="pw-new2" type="password" autocomplete="new-password" required>
+    <p id="pw-msg" class="msg" hidden></p>
+    <div class="actions end">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn primary">Change password</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="preview-dialog" class="modal wide">
+  <h2>Preview</h2>
+  <p class="muted" id="preview-meta"></p>
+  <iframe id="preview-frame" sandbox="" title="Email preview"></iframe>
+  <pre id="preview-text" class="pre" hidden></pre>
+  <div class="actions end"><button type="button" class="btn" data-close>Close</button></div>
+</dialog>
+
+<dialog id="failed-dialog" class="modal wide">
+  <h2>Failed recipients</h2>
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>Email</th><th>Status</th><th>SMTP response</th><th>Timestamp</th></tr></thead>
+      <tbody id="failed-rows"></tbody>
+    </table>
+  </div>
+  <div class="actions end"><button type="button" class="btn" data-close>Close</button></div>
+</dialog>
+
+<dialog id="message-dialog" class="modal wide">
+  <h2 id="msg-subject">Message</h2>
+  <dl class="summary" id="msg-envelope"></dl>
+  <details><summary>Headers &amp; MIME structure</summary><pre id="msg-headers" class="pre"></pre></details>
+  <iframe id="msg-frame" sandbox="" title="Message body"></iframe>
+  <pre id="msg-text" class="pre" hidden></pre>
+  <p id="msg-attachments" class="muted"></p>
+  <div class="actions end">
+    <a id="msg-raw" class="btn" href="#">Download .eml</a>
+    <button type="button" class="btn" data-close>Close</button>
+  </div>
+</dialog>
+
+</body>
+</html>

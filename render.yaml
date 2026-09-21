@@ -1,0 +1,37 @@
+# Render Blueprint: New > Blueprint > pick this repository.
+# Needs a paid instance type: the persistent disk (and so your data) is not available on the free plan.
+services:
+  - type: web
+    name: mass-mailer
+    runtime: python
+    plan: starter
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: python run.py
+    healthCheckPath: /api/health
+    numInstances: 1            # sessions and the sending queue live in memory: never scale above 1
+    disk:
+      name: mailer-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: EMAIL_MODE
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: DATA_DIR
+        value: /var/data/data
+      - key: UPLOAD_DIR
+        value: /var/data/uploads
+      - key: TEMPLATES_DIR
+        value: /var/data/templates
+      - key: TRUSTED_PROXY_HOPS
+        value: "1"
+      - key: SECRET_KEY
+        generateValue: true    # random, created once by Render
+      - key: ADMIN_EMAIL
+        sync: false            # Render asks you for these when you create the Blueprint
+      - key: ADMIN_PASSWORD
+        sync: false
