@@ -150,7 +150,7 @@ def delete(actor_id: int, user_id: int) -> None:
     with get_db() as conn:
         files = [r["stored_name"] for r in conn.execute("SELECT stored_name FROM attachments WHERE user_id=?", (user_id,))]
         conn.execute("DELETE FROM job_recipients WHERE job_id IN (SELECT id FROM jobs WHERE user_id=?)", (user_id,))
-        for table in ("jobs", "attachments", "dev_outbox", "user_settings", "suppressions"):
+        for table in ("jobs", "attachments", "dev_outbox", "user_settings", "suppressions", "smtp_profiles"):
             conn.execute(f"DELETE FROM {table} WHERE user_id=?", (user_id,))
         conn.execute("DELETE FROM users WHERE id=?", (user_id,))
     for name in files:

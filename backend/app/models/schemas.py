@@ -78,6 +78,10 @@ class PreviewIn(BaseModel):
     attachment_ids: list[str] = Field(default_factory=list, max_length=20)
 
 
+class SmtpProfileIn(BaseModel):
+    name: str = Field(max_length=100)
+
+
 class TemplateIn(BaseModel):
     name: str = Field(max_length=100)
     compose: ComposeIn

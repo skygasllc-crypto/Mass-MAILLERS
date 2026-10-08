@@ -134,7 +134,7 @@ def clean_state(monkeypatch):
     init_db()
     with get_db() as conn:
         for table in ("settings", "attachments", "jobs", "job_recipients", "dev_outbox", "suppression",
-                      "user_settings", "suppressions"):
+                      "user_settings", "suppressions", "smtp_profiles"):
             conn.execute(f"DELETE FROM {table}")
         conn.execute("DELETE FROM users WHERE id != ?", (UID,))
     monkeypatch.setattr(settings, "allow_registration", True)

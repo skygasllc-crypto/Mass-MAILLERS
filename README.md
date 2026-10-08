@@ -65,6 +65,12 @@ The **From Email** should be the account you sign in with, or an address you are
 
 Many providers, such as Microsoft 365 and Google Workspace, require an "app password" or SMTP AUTH to be switched on for the account.
 
+**Gmail:** use `smtp.gmail.com`, port 587 with STARTTLS, and your full Gmail address as the username. The password must be a 16-letter **App Password** (turn on 2-Step Verification, then create one at https://myaccount.google.com/apppasswords). Your normal Google password is refused. An App Password can't be shown again after you create it; if you lose it, delete it and create a new one.
+
+### Saved SMTP accounts
+
+You can save several SMTP accounts and switch between them. Fill in the settings, then click **Save account…** at the top of the SMTP card and give it a name. The settings are saved together with the password, which is encrypted. To switch, choose the account under **Saved accounts** and click **Use**. If an account passed **Test SMTP Connection** with exactly those settings, it stays verified when you switch back to it. Saving under an existing name replaces that account. Sends that are already running keep the account they started with.
+
 ## 4. Starting the application
 
 ```bash
@@ -134,7 +140,7 @@ In development mode, the test appears in the **Test Mailbox** at the bottom of t
    | Normal | 10 s |
    | Fast | 3 s |
 
-   With Conservative selected, a **Pause between batches** list appears. The hint below the sending mode shows the total pause time for the whole list (for example, 100 batches with a 5-minute pause adds about 8 hours). Development mode shortens these pauses tenfold.
+   With Conservative selected, a **Pause between batches** list appears. The hint below the sending mode shows the total pause time for the whole list (for example, 100 batches with a 5-minute pause adds about 8 hours). The page remembers the mode and pause you last chose. The pause you choose is used exactly, also in development mode. Development mode shortens only the fixed Normal/Fast pauses, and the Conservative default when no pause is chosen, tenfold.
 2. Click **SEND EMAIL**. A **READY TO SEND** summary appears with the recipient count, number of batches, From, Reply-To, Subject, attachments and size. Nothing is sent until you click **SEND NOW**.
 3. Sending runs in the background, so you can keep using the page. The progress panel shows the percentage, the completed count, successes, failures, the current batch and the current status. **Stop sending** cancels the remaining batches.
 4. When it finishes, **SENDING COMPLETE** shows the totals. From there:

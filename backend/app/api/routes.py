@@ -17,7 +17,7 @@ from ..config import CONSERVATIVE_DELAY_CHOICES, settings
 from ..db import get_db
 from ..email_templates import store as template_store
 from ..models.schemas import (
-    LoginIn, PasswordChangeIn, PreviewIn, RecipientsIn, RegisterIn, SendIn, SmtpSettingsIn, SuppressionIn,
+    LoginIn, PasswordChangeIn, PreviewIn, RecipientsIn, RegisterIn, SendIn, SmtpProfileIn, SmtpSettingsIn, SuppressionIn,
     TemplateIn, TestSendIn, UserStatusIn,
 )
 from ..recipients import suppression
@@ -155,7 +155,6 @@ def app_config(user: User = Depends(require_session)):
         "allowed_extensions": sorted(settings.allowed_extensions),
         "speeds": settings.speed_delays,
         "conservative_delays": list(CONSERVATIVE_DELAY_CHOICES),
-        "delay_scale": settings.delay_scale,
         "message_delays": settings.message_delays,
     }
 
@@ -198,8 +197,38 @@ def smtp_test(request: Request, user: User = Depends(require_session)):
     result = test_connection(cfg)
     if result["ok"]:
         config_store.mark_verified(cfg)
+        config_store.mark_profiles_verified(cfg)
     result["settings"] = config_store.load(user.id).public()
     return result
+
+
+@api.get("/smtp/profiles")
+def smtp_profiles(user: User = Depends(require_session)):
+    return config_store.list_profiles(user.id)
+
+
+@api.post("/smtp/profiles")
+def smtp_profile_save(body: SmtpProfileIn, user: User = Depends(require_session)):
+    """Save the current SMTP settings (as last saved with PUT /smtp) under a name."""
+    try:
+        return config_store.save_profile(user.id, body.name)
+    except config_store.ProfileError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@api.post("/smtp/profiles/{profile_id}/use")
+def smtp_profile_use(profile_id: int, user: User = Depends(require_session)):
+    try:
+        return config_store.use_profile(user.id, profile_id).public()
+    except config_store.ProfileError as exc:
+        raise HTTPException(status_code=404 if "not found" in str(exc) else 422, detail=str(exc))
+
+
+@api.delete("/smtp/profiles/{profile_id}")
+def smtp_profile_delete(profile_id: int, user: User = Depends(require_session)):
+    if not config_store.delete_profile(user.id, profile_id):
+        raise HTTPException(status_code=404, detail="Saved SMTP account not found.")
+    return {"ok": True}
 
 
 @api.post("/smtp/deliverability")

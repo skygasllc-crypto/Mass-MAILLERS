@@ -138,3 +138,84 @@ def mark_verified(cfg: SmtpConfig) -> None:
 
 def is_verified(cfg: SmtpConfig) -> bool:
     return bool(cfg.host) and get_setting(cfg.user_id, "verified_fingerprint") == cfg.fingerprint()
+
+
+# --------------------------------------------------------------------------- saved SMTP accounts
+
+MAX_PROFILES = 50
+
+
+class ProfileError(Exception):
+    pass
+
+
+def list_profiles(user_id: int) -> list[dict]:
+    """Saved accounts for the account picker; never includes the password."""
+    with get_db() as conn:
+        rows = conn.execute("SELECT id, name, data_enc, updated_at FROM smtp_profiles WHERE user_id=? "
+                            "ORDER BY name COLLATE NOCASE", (user_id,)).fetchall()
+    out = []
+    for r in rows:
+        cfg = from_snapshot(r["data_enc"])
+        out.append({"id": r["id"], "name": r["name"], "updated_at": r["updated_at"],
+                    "host": cfg.host if cfg else "", "username": cfg.username if cfg else "",
+                    "from_email": cfg.from_email if cfg else "", "readable": cfg is not None})
+    return out
+
+
+def save_profile(user_id: int, name: str) -> dict:
+    """Save the current SMTP settings (including the password) under ``name``; replaces a same-named one."""
+    name = " ".join(name.split())
+    if not name:
+        raise ProfileError("Enter a name for this SMTP account.")
+    cfg = load(user_id)
+    if not cfg.host:
+        raise ProfileError("Enter the SMTP settings first.")
+    verified_fp = cfg.fingerprint() if is_verified(cfg) else None
+    with get_db() as conn:
+        exists = conn.execute("SELECT 1 FROM smtp_profiles WHERE user_id=? AND name=?", (user_id, name)).fetchone()
+        count = conn.execute("SELECT COUNT(*) FROM smtp_profiles WHERE user_id=?", (user_id,)).fetchone()[0]
+        if not exists and count >= MAX_PROFILES:
+            raise ProfileError(f"You can save at most {MAX_PROFILES} SMTP accounts. Delete one first.")
+        conn.execute(
+            "INSERT INTO smtp_profiles(user_id, name, data_enc, verified_fp, updated_at) VALUES(?,?,?,?,?) "
+            "ON CONFLICT(user_id, name) DO UPDATE SET data_enc=excluded.data_enc, "
+            "verified_fp=excluded.verified_fp, updated_at=excluded.updated_at",
+            (user_id, name, snapshot(cfg), verified_fp, now_iso()),
+        )
+        row = conn.execute("SELECT id FROM smtp_profiles WHERE user_id=? AND name=?", (user_id, name)).fetchone()
+    return {"id": row["id"], "name": name}
+
+
+def use_profile(user_id: int, profile_id: int) -> SmtpConfig:
+    """Make a saved account the current SMTP settings."""
+    with get_db() as conn:
+        row = conn.execute("SELECT data_enc, verified_fp FROM smtp_profiles WHERE id=? AND user_id=?",
+                           (profile_id, user_id)).fetchone()
+    if row is None:
+        raise ProfileError("Saved SMTP account not found.")
+    saved = from_snapshot(row["data_enc"])
+    if saved is None:  # SECRET_KEY changed since it was saved
+        raise ProfileError("This saved account can no longer be read. Enter its settings again and save it.")
+    save(user_id, saved, saved.password)
+    cfg = load(user_id)
+    if row["verified_fp"] and row["verified_fp"] == cfg.fingerprint():
+        mark_verified(cfg)  # it passed the SMTP test with exactly these settings
+    return cfg
+
+
+def delete_profile(user_id: int, profile_id: int) -> bool:
+    with get_db() as conn:
+        return conn.execute("DELETE FROM smtp_profiles WHERE id=? AND user_id=?",
+                            (profile_id, user_id)).rowcount > 0
+
+
+def mark_profiles_verified(cfg: SmtpConfig) -> None:
+    """After a successful SMTP test, remember it on saved accounts with exactly these settings."""
+    fp = cfg.fingerprint()
+    with get_db() as conn:
+        rows = conn.execute("SELECT id, data_enc FROM smtp_profiles WHERE user_id=?", (cfg.user_id,)).fetchall()
+        for r in rows:
+            saved = from_snapshot(r["data_enc"])
+            if saved is not None and saved.fingerprint() == fp:
+                conn.execute("UPDATE smtp_profiles SET verified_fp=? WHERE id=?", (fp, r["id"]))

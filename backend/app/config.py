@@ -93,7 +93,6 @@ class Settings:
     retry_delay: float = 60.0
     speed_delays: dict[str, float] = field(default_factory=dict)
     message_delays: dict[str, float] = field(default_factory=dict)
-    delay_scale: float = 1.0  # development mode shortens every pause tenfold
 
     @property
     def is_development(self) -> bool:
@@ -174,7 +173,6 @@ def load_settings() -> Settings:
         retry_delay=_float("RETRY_DELAY_SECONDS", 1.0 if dev else 60.0),
         speed_delays=delays,
         message_delays=message_delays,
-        delay_scale=scale,
     )
 
 

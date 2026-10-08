@@ -26,6 +26,15 @@ CREATE TABLE IF NOT EXISTS user_settings (
     value   TEXT,
     PRIMARY KEY (user_id, key)
 );
+CREATE TABLE IF NOT EXISTS smtp_profiles (  -- saved SMTP accounts the user can switch between
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL,
+    name        TEXT NOT NULL,
+    data_enc    TEXT NOT NULL,  -- encrypted settings incl. password
+    verified_fp TEXT,           -- fingerprint of the settings when they last passed the SMTP test
+    updated_at  TEXT NOT NULL,
+    UNIQUE (user_id, name)
+);
 CREATE TABLE IF NOT EXISTS suppressions (
     user_id    INTEGER NOT NULL,
     email      TEXT NOT NULL,

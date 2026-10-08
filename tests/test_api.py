@@ -281,7 +281,67 @@ def test_conservative_delay_in_summary(auth_client):
     body = {"compose": {"subject": "Hi", "body": "Hello"}, "recipients_text": "a@example.com",
             "speed": "conservative", "conservative_delay": 300}
     s = auth_client.post("/api/send/prepare", json=body).json()
-    assert s["delay_seconds"] == pytest.approx(300 * settings.delay_scale)
+    assert s["delay_seconds"] == 300
     body["conservative_delay"] = 45
     s = auth_client.post("/api/send/prepare", json=body).json()
     assert not s["ok"] and any("conservative pause" in e for e in s["errors"])
+
+
+def test_saved_smtp_accounts(auth_client):
+    from backend.app.db import get_db
+    from backend.app.smtp import config_store
+
+    from .test_users import new_client, register
+
+    first = {"host": "smtp.first.example", "port": 587, "security": "starttls", "username": "one@first.example",
+             "password": "first-secret", "from_email": "one@first.example", "reply_to": "sales@first.example"}
+    second = {"host": "smtp.second.example", "port": 465, "security": "ssl", "username": "two@second.example",
+              "password": "second-secret", "from_email": "two@second.example"}
+    auth_client.put("/api/smtp", json=first)
+    a = auth_client.post("/api/smtp/profiles", json={"name": "First"}).json()
+    auth_client.put("/api/smtp", json=second)
+    b = auth_client.post("/api/smtp/profiles", json={"name": "Second"}).json()
+
+    profiles = auth_client.get("/api/smtp/profiles").json()
+    assert [p["name"] for p in profiles] == ["First", "Second"]
+    assert "secret" not in str(profiles)  # passwords are never sent to the browser
+    with get_db() as conn:
+        assert "secret" not in str([tuple(r) for r in conn.execute("SELECT * FROM smtp_profiles")])
+
+    current = auth_client.post(f"/api/smtp/profiles/{a['id']}/use").json()
+    assert (current["host"], current["port"], current["username"], current["reply_to"]) == \
+        ("smtp.first.example", 587, "one@first.example", "sales@first.example")
+    assert current["password_set"] and "password" not in current
+    assert config_store.load(UID).password == "first-secret"
+    auth_client.post(f"/api/smtp/profiles/{b['id']}/use")
+    assert config_store.load(UID).password == "second-secret"
+
+    # Saving under an existing name replaces it instead of adding a duplicate.
+    auth_client.put("/api/smtp", json={**second, "password": "rotated"})
+    assert auth_client.post("/api/smtp/profiles", json={"name": "Second"}).json()["id"] == b["id"]
+    auth_client.put("/api/smtp", json=first)
+    auth_client.post(f"/api/smtp/profiles/{b['id']}/use")
+    assert config_store.load(UID).password == "rotated"
+
+    with new_client() as other:  # other users cannot see or use them
+        register(other, "olga@example.com")
+        assert other.get("/api/smtp/profiles").json() == []
+        assert other.post(f"/api/smtp/profiles/{a['id']}/use").status_code == 404
+        assert other.delete(f"/api/smtp/profiles/{a['id']}").status_code == 404
+
+    assert auth_client.delete(f"/api/smtp/profiles/{a['id']}").json()["ok"]
+    assert [p["name"] for p in auth_client.get("/api/smtp/profiles").json()] == ["Second"]
+
+
+def test_saved_smtp_account_keeps_verification(auth_client, smtp_server):
+    controller, _ = smtp_server
+    from .conftest import SMTP_PASS, SMTP_USER
+
+    good = {"host": "127.0.0.1", "port": controller.port, "security": "none", "username": SMTP_USER,
+            "password": SMTP_PASS, "from_email": SMTP_USER}
+    auth_client.put("/api/smtp", json=good)
+    saved = auth_client.post("/api/smtp/profiles", json={"name": "Local"}).json()
+    assert auth_client.post("/api/smtp/test").json()["ok"]  # test after saving still marks the saved account
+    auth_client.put("/api/smtp", json={**good, "host": "smtp.other.example"})
+    assert auth_client.get("/api/smtp").json()["verified"] is False
+    assert auth_client.post(f"/api/smtp/profiles/{saved['id']}/use").json()["verified"] is True

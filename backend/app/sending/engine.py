@@ -41,14 +41,22 @@ class SendRequest:
 
 
 def batch_delay(speed: str, conservative_delay: int | None = None) -> float:
-    """Seconds to pause between batches for this sending mode."""
+    """Seconds to pause between batches for this sending mode. A pause the user picked is used exactly,
+    also in development mode (only the preset pauses are shortened there)."""
     if speed == "conservative" and conservative_delay in CONSERVATIVE_DELAY_CHOICES:
-        return conservative_delay * settings.delay_scale
+        return float(conservative_delay)
     return settings.speed_delays.get(speed, settings.speed_delays["conservative"])
 
 
 class FatalSendError(Exception):
     """Stops the whole job (e.g. authentication rejected)."""
+
+
+def _duration(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:g}s"
+    minutes = seconds / 60
+    return f"{minutes:g} min" if minutes < 60 else f"{minutes / 60:g} h"
 
 
 def _mb(n: int) -> str:
@@ -505,7 +513,7 @@ class SendEngine:
                 transport.close()
                 log.info("Job %s: batch %d/%d done", job_id, batch_no, total_batches)
                 if batch_no < total_batches and not self._cancel.is_set():
-                    self._update_job(job_id, status_text=f"Batch {batch_no} sent. Waiting {delay:g}s before the next batch...")
+                    self._update_job(job_id, status_text=f"Batch {batch_no} sent. Waiting {_duration(delay)} before the next batch...")
                     self._cancel.wait(delay)
         except FatalSendError as exc:
             transport.close()

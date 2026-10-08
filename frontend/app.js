@@ -11,6 +11,7 @@ const state = {
   jobId: null,
   pollTimer: null,
   templates: [],
+  profiles: [],
   registering: false,
   parseTimer: null,
 };
@@ -290,6 +291,65 @@ async function onTestSmtp() {
       showMsg("smtp-msg", err.message, "error");
     }
   });
+}
+
+/* Saved SMTP accounts: store several sets of credentials and switch between them. */
+async function loadProfiles(selectId) {
+  state.profiles = await api("/api/smtp/profiles");
+  const select = $("profile-select");
+  const current = String(selectId ?? select.value);
+  select.replaceChildren(el("option", { value: "", text: state.profiles.length ? "— Saved SMTP accounts —" : "— No saved accounts yet —" }),
+    ...state.profiles.map((p) => el("option", { value: String(p.id),
+      text: p.readable ? `${p.name}  (${p.username || p.from_email} @ ${p.host})` : `${p.name}  (re-enter settings)` })));
+  select.value = state.profiles.some((p) => String(p.id) === current) ? current : "";
+}
+
+function selectedProfile() {
+  const p = state.profiles.find((x) => String(x.id) === $("profile-select").value);
+  if (!p) showMsg("prof-msg", "Choose a saved account first.", "error");
+  return p;
+}
+
+async function onProfUse() {
+  const p = selectedProfile();
+  if (!p) return;
+  try {
+    fillSmtp(await api(`/api/smtp/profiles/${p.id}/use`, { method: "POST" }));
+    $("smtp-steps").hidden = true;
+    showMsg("smtp-msg", "");
+    showMsg("prof-msg", `Now using "${p.name}". Sends already running keep their own account.`, "ok");
+  } catch (err) {
+    showMsg("prof-msg", err.message, "error");
+  }
+}
+
+async function onProfSave() {
+  if (!$("smtp-host").value.trim()) { showMsg("prof-msg", "Enter the SMTP settings first.", "error"); return; }
+  const suggested = $("smtp-username").value.trim() || $("from-email").value.trim();
+  const name = (prompt("Name for this SMTP account:", suggested) || "").trim();
+  if (!name) return;
+  const existing = state.profiles.find((p) => p.name.toLowerCase() === name.toLowerCase());
+  if (existing && !confirm(`A saved account called "${existing.name}" exists. Replace it?`)) return;
+  try {
+    await saveSmtp();  // store what is in the form, including a newly typed password
+    const res = await api("/api/smtp/profiles", { method: "POST", body: { name: existing ? existing.name : name } });
+    await loadProfiles(res.id);
+    showMsg("prof-msg", `Saved "${res.name}" (including the password, encrypted).`, "ok");
+  } catch (err) {
+    showMsg("prof-msg", err.message, "error");
+  }
+}
+
+async function onProfDelete() {
+  const p = selectedProfile();
+  if (!p || !confirm(`Delete the saved account "${p.name}"? The current settings in the form stay as they are.`)) return;
+  try {
+    await api(`/api/smtp/profiles/${p.id}`, { method: "DELETE" });
+    await loadProfiles("");
+    showMsg("prof-msg", `Deleted "${p.name}".`, "ok");
+  } catch (err) {
+    showMsg("prof-msg", err.message, "error");
+  }
 }
 
 async function onCheckDeliverability() {
@@ -609,6 +669,22 @@ function sendPayload(confirm = false) {
   };
 }
 
+/* Remember the chosen sending mode and pause in this browser, so a reload doesn't reset them. */
+const PACE_KEY = "mass-mailer:pace";
+
+function savePace() {
+  try { localStorage.setItem(PACE_KEY, JSON.stringify({ speed: $("speed").value, delay: $("conservative-delay").value })); } catch (_) { /* storage unavailable */ }
+}
+
+function restorePace() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(PACE_KEY) || "null"); } catch (_) { /* storage unavailable */ }
+  if (!saved) return;
+  const pick = (select, value) => { if ([...select.options].some((o) => o.value === value)) select.value = value; };
+  pick($("speed"), saved.speed);
+  pick($("conservative-delay"), saved.delay);
+}
+
 function fmtDuration(seconds) {
   if (seconds < 1) return `${seconds.toFixed(1)} s`;
   if (seconds < 60) return `${Math.round(seconds)} s`;
@@ -627,7 +703,7 @@ function updateBatchInfo() {
   const conservative = $("speed").value === "conservative";
   $("conservative-delay-field").hidden = !conservative;
   const delay = conservative
-    ? Number($("conservative-delay").value) * state.config.delay_scale
+    ? Number($("conservative-delay").value)
     : state.config.speeds[$("speed").value];
   const batchesLeft = Math.max(0, Math.ceil(ready / size) - 1);
   $("speed-info").textContent = `${fmtDuration(delay)} pause between batches`
@@ -871,7 +947,7 @@ async function startApp() {
     `Allowed: ${state.config.allowed_extensions.join(", ")}`;
 
   fillSmtp(await api("/api/smtp"));
-  await Promise.all([loadAttachments(), parseRecipients(), loadMailbox(), loadTemplates(""), loadSuppression(), loadUsers()]);
+  await Promise.all([loadAttachments(), parseRecipients(), loadMailbox(), loadTemplates(""), loadProfiles(""), loadSuppression(), loadUsers()]);
   onFormatChange();
 
   const latest = await api("/api/jobs/latest");
@@ -893,6 +969,9 @@ function bind() {
   $("deliv-btn").addEventListener("click", onCheckDeliverability);
   $("suppress-btn").addEventListener("click", async () => { await loadSuppression(); $("suppress-msg").textContent = ""; $("suppress-dialog").showModal(); });
   $("suppress-add").addEventListener("click", onSuppressAdd);
+  $("prof-use").addEventListener("click", onProfUse);
+  $("prof-save").addEventListener("click", onProfSave);
+  $("prof-delete").addEventListener("click", onProfDelete);
   $("tpl-load").addEventListener("click", onTplLoad);
   $("tpl-save").addEventListener("click", onTplSave);
   $("tpl-update").addEventListener("click", onTplUpdate);
@@ -909,8 +988,9 @@ function bind() {
   $("personalize").addEventListener("change", () => { $("personalize-opts").hidden = !$("personalize").checked; updateBatchInfo(); });
   $("attach-input").addEventListener("change", onAttach);
   $("batch-size").addEventListener("input", updateBatchInfo);
-  $("speed").addEventListener("change", updateBatchInfo);
-  $("conservative-delay").addEventListener("change", updateBatchInfo);
+  restorePace();
+  $("speed").addEventListener("change", () => { savePace(); updateBatchInfo(); });
+  $("conservative-delay").addEventListener("change", () => { savePace(); updateBatchInfo(); });
   $("test-btn").addEventListener("click", onSendTest);
   $("send-btn").addEventListener("click", onSendClick);
   $("confirm-cancel").addEventListener("click", () => $("confirm-dialog").close());

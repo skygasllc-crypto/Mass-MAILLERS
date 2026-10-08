@@ -65,6 +65,14 @@
     <!-- ---------------- SMTP SETTINGS ---------------- -->
     <section class="card" id="smtp-card">
       <h2><span class="step">1</span> SMTP Settings</h2>
+      <div class="template-bar">
+        <label for="profile-select">Saved accounts</label>
+        <select id="profile-select"><option value="">— Saved SMTP accounts —</option></select>
+        <button type="button" id="prof-use" class="btn">Use</button>
+        <button type="button" id="prof-save" class="btn">Save account…</button>
+        <button type="button" id="prof-delete" class="btn link danger-link">Delete</button>
+      </div>
+      <p id="prof-msg" class="msg" hidden></p>
       <form id="smtp-form" autocomplete="off">
         <div class="grid-2">
           <div class="field span-2">

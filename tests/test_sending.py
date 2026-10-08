@@ -184,7 +184,6 @@ def test_conservative_delay_choices(monkeypatch):
     from backend.app.config import settings
     from backend.app.sending.engine import batch_delay
 
-    monkeypatch.setattr(settings, "delay_scale", 1.0)
     monkeypatch.setattr(settings, "speed_delays", {"conservative": 30, "normal": 10, "fast": 3})
     for seconds in (10, 30, 60, 120, 300, 600, 1200):
         assert batch_delay("conservative", seconds) == seconds
