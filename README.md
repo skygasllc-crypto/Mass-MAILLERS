@@ -1,6 +1,6 @@
 # Mass Mailer
 
-A small, simple web app for sending one legitimate business email to up to 1,000 recipients through your own SMTP server. Recipients are hidden from each other with BCC, replies go to the Reply-To address you choose, and you can add attachments. The app sends in the background and shows its progress.
+A small, simple web app for sending one legitimate business email to up to 10,000 recipients through your own SMTP server. Recipients are hidden from each other with BCC, replies go to the Reply-To address you choose, and you can add attachments. The app sends in the background and shows its progress.
 
 It doesn't try to be a CRM or a marketing platform, and it has no features for getting around spam filters or provider limits.
 
@@ -45,6 +45,7 @@ Open `.env` and set at least these values:
 | `SECRET_KEY` | A long random string that signs sessions and encrypts the stored SMTP password. You can generate one with `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
 | `SMTP_MAX_RECIPIENTS_PER_MESSAGE` | The most recipients your SMTP provider accepts in one message. The batch size can never be set higher than this. |
 | `MAX_ATTACHMENT_MB` / `MAX_MESSAGE_MB` | Limits on attachment size and total email size. |
+| `MAX_PARALLEL_SENDS` | How many sends one user can run at the same time, each through a different SMTP account (default 50). |
 
 In development mode, if `ADMIN_PASSWORD` or `SECRET_KEY` is missing, the app generates one and saves it in `data/` (`data/admin_password.txt`). Production mode refuses to start without both.
 
@@ -93,7 +94,7 @@ Mary Smith,mary@example.com
 ```
 Header-less `John Doe,john@example.com` rows and `;` or tab separators also work.
 
-Addresses are trimmed, lower-cased and checked for valid syntax. The app shows counts for **Total / Valid / Invalid / Duplicates / Ready to send**, and **Show invalid addresses** lists the problem entries. Click **Remove invalid & duplicates** to clean the list. Duplicates are never sent twice, even if you skip the cleanup. The app does no mailbox probing: it doesn't contact recipients' servers to check addresses. The limit is 1,000 recipients (`MAX_RECIPIENTS`).
+Addresses are trimmed, lower-cased and checked for valid syntax. The app shows counts for **Total / Valid / Invalid / Duplicates / Ready to send**, and **Show invalid addresses** lists the problem entries. Click **Remove invalid & duplicates** to clean the list. Duplicates are never sent twice, even if you skip the cleanup. The app does no mailbox probing: it doesn't contact recipients' servers to check addresses. The limit is 10,000 recipients (`MAX_RECIPIENTS`).
 
 ## 6. Creating an email
 
@@ -129,17 +130,21 @@ In development mode, the test appears in the **Test Mailbox** at the bottom of t
 
    | Mode | Pause between batches |
    |---|---|
-   | Conservative | 30 s |
+   | Conservative | You choose: 10 s, 30 s (default), 1 min, 2 min, 5 min, 10 min or 20 min |
    | Normal | 10 s |
    | Fast | 3 s |
 
-   Development mode shortens these pauses tenfold.
+   With Conservative selected, a **Pause between batches** list appears. The hint below the sending mode shows the total pause time for the whole list (for example, 100 batches with a 5-minute pause adds about 8 hours). Development mode shortens these pauses tenfold.
 2. Click **SEND EMAIL**. A **READY TO SEND** summary appears with the recipient count, number of batches, From, Reply-To, Subject, attachments and size. Nothing is sent until you click **SEND NOW**.
 3. Sending runs in the background, so you can keep using the page. The progress panel shows the percentage, the completed count, successes, failures, the current batch and the current status. **Stop sending** cancels the remaining batches.
 4. When it finishes, **SENDING COMPLETE** shows the totals. From there:
    * **View Failed**: each failed address with its status, SMTP response and timestamp.
    * **Export Failed** / **Export Results**: download a CSV.
    * **New Email**: clears the recipients, message and attachments.
+
+**Sending keeps going after you log out.** Sends run on the server, not in your browser, so you can close the page or log out and log back in later. The **Sends in progress** panel lists every send that is still running. Click **View** to see one in the progress panel.
+
+**Sending through several SMTP accounts at once.** Each send keeps the SMTP settings it was started with, so changing the settings afterwards doesn't affect it. To send another bulk email through a different account at the same time, enter that account in **SMTP Configuration**, save and test it, and send again. Each SMTP account can run only one send at a time, so its pause between batches and the provider's limits are respected. One user can run up to `MAX_PARALLEL_SENDS` sends at once (default 50). The app drops its copy of the SMTP credentials as soon as a send ends.
 
 Results are saved locally in `data/mailer.db`.
 
@@ -251,6 +256,7 @@ What **you** need to set up once, at your domain's DNS or email provider:
 | Many `550`/`554` failures | The server rejected the sender or the recipients. Check that your From address is authorized and that your domain has SPF/DKIM set up. |
 | `452 Too many recipients` | Lower the **BCC batch size**, and set `SMTP_MAX_RECIPIENTS_PER_MESSAGE` to your provider's limit. |
 | Login keeps asking for the password | You're on plain `http://` with `COOKIE_SECURE=true`. Use HTTPS, or for localhost only set `COOKIE_SECURE=false`. |
+| "This SMTP account is already sending" | A send through the same SMTP account is still running. Wait for it to finish, or use a different SMTP account. |
 | "Stopped: application was restarted" | The app was closed during a send. Export the results; addresses marked NOT_SENT did not receive the email. |
 
 ### Development mode test addresses

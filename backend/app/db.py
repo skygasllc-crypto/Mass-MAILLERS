@@ -61,7 +61,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     total_batches INTEGER NOT NULL,
     current_batch INTEGER NOT NULL DEFAULT 0,
     speed         TEXT,
-    payload       TEXT NOT NULL
+    payload       TEXT NOT NULL,
+    smtp_account  TEXT,  -- "username @ host" shown in the UI
+    smtp_enc      TEXT   -- encrypted SMTP settings the job was started with; cleared when it ends
 );
 CREATE TABLE IF NOT EXISTS job_recipients (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -129,11 +131,15 @@ def init_db() -> None:
             columns = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
             if "user_id" not in columns:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN user_id INTEGER")
+        job_columns = {r["name"] for r in conn.execute("PRAGMA table_info(jobs)")}
+        for column in ("smtp_account", "smtp_enc"):
+            if column not in job_columns:
+                conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_user ON jobs(user_id, created_at)")
         # A job that was running when the process stopped cannot resume safely.
         conn.execute(
             "UPDATE jobs SET status='interrupted', status_text='Stopped: application was restarted', "
-            "finished_at=? WHERE status IN ('queued', 'running')",
+            "finished_at=?, smtp_enc=NULL WHERE status IN ('queued', 'running')",
             (now_iso(),),
         )
         conn.execute(

@@ -73,7 +73,7 @@ def test_individual_delivery_one_copy_each(smtp_server, monkeypatch):
     rcpts = [Recipient(f"u{i}@example.org") for i in range(5)]
     req = SendRequest(UID, Compose("S", "B", individual=True), rcpts, 2, "fast", [])
     assert prepare(req)["messages"] == 5 and prepare(req)["delivery"] == "individual"
-    engine.start(create_job(req), UID)
+    engine.start(create_job(req), UID, config_store.load(UID).account_key)
     engine.wait(30)
     assert [m["rcpts"] for m in handler.messages] == [[r.email] for r in rcpts]
     for m in handler.messages:

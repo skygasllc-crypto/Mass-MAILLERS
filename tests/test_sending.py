@@ -23,7 +23,7 @@ def run_job(req):
     summary = prepare(req)
     assert summary["ok"], summary["errors"]
     job_id = create_job(req)
-    engine.start(job_id, UID)
+    engine.start(job_id, UID, config_store.load(UID).account_key)
     engine.wait(30)
     return job_id
 
@@ -178,3 +178,16 @@ def test_development_mode_never_sends(smtp_server):
     assert len(rows) == 3
     progress = job_progress(job_id)
     assert progress["successful"] == 6 and progress["failed"] == 1
+
+
+def test_conservative_delay_choices(monkeypatch):
+    from backend.app.config import settings
+    from backend.app.sending.engine import batch_delay
+
+    monkeypatch.setattr(settings, "delay_scale", 1.0)
+    monkeypatch.setattr(settings, "speed_delays", {"conservative": 30, "normal": 10, "fast": 3})
+    for seconds in (10, 30, 60, 120, 300, 600, 1200):
+        assert batch_delay("conservative", seconds) == seconds
+    assert batch_delay("conservative", None) == 30   # default
+    assert batch_delay("conservative", 7) == 30      # not an allowed choice
+    assert batch_delay("normal", 600) == 10          # only applies to conservative

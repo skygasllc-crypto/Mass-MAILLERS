@@ -43,7 +43,7 @@ class SmtpSettingsIn(BaseModel):
 
 
 class RecipientsIn(BaseModel):
-    text: str = Field(default="", max_length=500_000)
+    text: str = Field(default="", max_length=2_000_000)
 
 
 class ComposeIn(BaseModel):
@@ -56,9 +56,10 @@ class ComposeIn(BaseModel):
 
 class SendIn(BaseModel):
     compose: ComposeIn
-    recipients_text: str = Field(default="", max_length=500_000)
+    recipients_text: str = Field(default="", max_length=2_000_000)
     batch_size: int = Field(default=100, ge=1, le=10_000)
     speed: Literal["conservative", "normal", "fast"] = "conservative"
+    conservative_delay: int | None = Field(default=None, ge=1, le=3600)  # seconds between batches
     delivery: Literal["bcc", "individual"] = "bcc"
     attachment_ids: list[str] = Field(default_factory=list, max_length=20)
     confirm: bool = False
@@ -73,7 +74,7 @@ class TestSendIn(BaseModel):
 
 class PreviewIn(BaseModel):
     compose: ComposeIn
-    recipients_text: str = Field(default="", max_length=500_000)
+    recipients_text: str = Field(default="", max_length=2_000_000)
     attachment_ids: list[str] = Field(default_factory=list, max_length=20)
 
 
@@ -85,5 +86,5 @@ class TemplateIn(BaseModel):
 
 
 class SuppressionIn(BaseModel):
-    text: str = Field(default="", max_length=500_000)
+    text: str = Field(default="", max_length=2_000_000)
     reason: Literal["unsubscribed", "bounced", "manual"] = "unsubscribed"

@@ -146,7 +146,7 @@ def test_users_can_send_at_the_same_time(monkeypatch):
         b.put("/api/smtp", json={"from_email": "hank@example.com"})
         assert a.post("/api/send", json=payload).status_code == 200
         assert b.post("/api/send", json=payload).status_code == 200  # not blocked by Gina's send
-        assert a.post("/api/send", json=payload).status_code == 409  # but one at a time per user
+        assert a.post("/api/send", json=payload).status_code == 409  # same SMTP account: one send at a time
         engine.wait(30)
 
 

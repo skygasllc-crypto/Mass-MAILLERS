@@ -1,7 +1,8 @@
 """Persisted SMTP settings and sender identity. The password is stored encrypted."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
 
 from ..db import get_db, get_setting, set_settings, now_iso
 from ..utils.crypto import decrypt, encrypt, fingerprint
@@ -36,6 +37,16 @@ class SmtpConfig:
     @property
     def unsubscribe_mailto(self) -> str:
         return self.unsubscribe_email or self.reply_to or self.from_email
+
+    @property
+    def account(self) -> str:
+        """Label for the SMTP account, e.g. ``news@example.com @ smtp.example.com``."""
+        return f"{self.username or self.from_email} @ {self.host}" if self.host else self.from_email
+
+    @property
+    def account_key(self) -> str:
+        """Identifies the SMTP account: only one send may use it at a time."""
+        return fingerprint("account", self.host.lower(), str(self.port), (self.username or self.from_email).lower())
 
     def fingerprint(self) -> str:
         return fingerprint(self.host.lower(), str(self.port), self.security, self.username, self.password)
@@ -82,6 +93,16 @@ def load(user_id: int) -> SmtpConfig:
         user_id=user_id,
         trusted=_is_admin(user_id),
     )
+
+
+def snapshot(cfg: SmtpConfig) -> str:
+    """Encrypted copy of the settings, so a running send is unaffected by later changes."""
+    return encrypt(json.dumps(asdict(cfg)))
+
+
+def from_snapshot(token: str) -> SmtpConfig | None:
+    data = decrypt(token)
+    return SmtpConfig(**json.loads(data)) if data else None
 
 
 def _is_admin(user_id: int) -> bool:

@@ -18,7 +18,7 @@ import uuid
 from dataclasses import asdict, dataclass
 
 from ..attachments.store import AttachmentError, get_many
-from ..config import settings
+from ..config import CONSERVATIVE_DELAY_CHOICES, settings
 from ..db import get_db, now_iso
 from ..recipients import suppression
 from ..recipients.parser import Recipient, is_valid_email, make_batches
@@ -37,6 +37,14 @@ class SendRequest:
     batch_size: int
     speed: str
     attachment_ids: list[str]
+    conservative_delay: int | None = None  # user-chosen pause for conservative mode, in seconds
+
+
+def batch_delay(speed: str, conservative_delay: int | None = None) -> float:
+    """Seconds to pause between batches for this sending mode."""
+    if speed == "conservative" and conservative_delay in CONSERVATIVE_DELAY_CHOICES:
+        return conservative_delay * settings.delay_scale
+    return settings.speed_delays.get(speed, settings.speed_delays["conservative"])
 
 
 class FatalSendError(Exception):
@@ -129,6 +137,9 @@ def prepare(req: SendRequest, *, test: bool = False) -> dict:
             errors.append(f"BCC batch size must be between 1 and {settings.max_batch_size}.")
         if req.speed not in settings.speed_delays:
             errors.append("Choose a sending speed.")
+        if req.speed == "conservative" and req.conservative_delay is not None \
+                and req.conservative_delay not in CONSERVATIVE_DELAY_CHOICES:
+            errors.append("Choose a conservative pause of 10s, 30s, 1m, 2m, 5m, 10m or 20m.")
 
     warnings.extend(content_warnings(cfg, compose, len(req.recipients)))
     if compose.personalize and not uses_placeholder(compose):
@@ -172,7 +183,7 @@ def prepare(req: SendRequest, *, test: bool = False) -> dict:
         "size_bytes": size,
         "size": _mb(size),
         "speed": req.speed,
-        "delay_seconds": settings.speed_delays.get(req.speed, 0),
+        "delay_seconds": batch_delay(req.speed, req.conservative_delay),
         "email_mode": settings.email_mode,
     }
 
@@ -234,16 +245,17 @@ def create_job(req: SendRequest) -> str:
     batch_size = max(1, min(req.batch_size, settings.max_batch_size))
     batches = make_batches(req.recipients, batch_size)
     job_id = uuid.uuid4().hex[:12]
-    payload = {"compose": asdict(req.compose), "attachment_ids": req.attachment_ids}
+    payload = {"compose": asdict(req.compose), "attachment_ids": req.attachment_ids,
+               "conservative_delay": req.conservative_delay}
     now = now_iso()
     with get_db() as conn:
         conn.execute(
             "INSERT INTO jobs(id, created_at, status, status_text, subject, from_email, reply_to, email_mode, "
-            "total, batch_size, total_batches, current_batch, speed, payload, user_id) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "total, batch_size, total_batches, current_batch, speed, payload, user_id, smtp_account, smtp_enc) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (job_id, now, "queued", "Waiting to start...", req.compose.subject, cfg.from_email,
              cfg.reply_to or cfg.from_email, settings.email_mode, len(req.recipients), batch_size,
-             len(batches), 0, req.speed, json.dumps(payload), req.user_id),
+             len(batches), 0, req.speed, json.dumps(payload), req.user_id, cfg.account, config_store.snapshot(cfg)),
         )
         conn.executemany(
             "INSERT INTO job_recipients(job_id, email, name, batch_no, status, updated_at) VALUES(?,?,?,?,?,?)",
@@ -274,6 +286,7 @@ def job_progress(job_id: str, user_id: int | None = None) -> dict | None:
         "subject": job["subject"],
         "from_email": job["from_email"],
         "reply_to": job["reply_to"],
+        "smtp_account": job["smtp_account"] or job["from_email"],
         "email_mode": job["email_mode"],
         "total": total,
         "completed": done,
@@ -299,6 +312,21 @@ def latest_job_id(user_id: int) -> str | None:
     return row["id"] if row else None
 
 
+def active_job_ids(user_id: int) -> list[str]:
+    with get_db() as conn:
+        rows = conn.execute("SELECT id FROM jobs WHERE user_id=? AND status IN ('queued', 'running') "
+                            "ORDER BY created_at, rowid", (user_id,)).fetchall()
+    return [r["id"] for r in rows]
+
+
+def attachments_in_use(user_id: int) -> set[str]:
+    """Attachment ids used by this user's sends that have not finished yet."""
+    with get_db() as conn:
+        rows = conn.execute("SELECT payload FROM jobs WHERE user_id=? AND status IN ('queued', 'running')",
+                            (user_id,)).fetchall()
+    return {a for r in rows for a in json.loads(r["payload"])["attachment_ids"]}
+
+
 def job_results(job_id: str, status: str | None = None) -> list[dict]:
     query = "SELECT email, name, batch_no, status, smtp_response, attempts, updated_at FROM job_recipients WHERE job_id=?"
     params: list = [job_id]
@@ -313,45 +341,70 @@ def job_results(job_id: str, status: str | None = None) -> list[dict]:
 
 
 class _Worker:
-    def __init__(self, job_id: str, thread: threading.Thread) -> None:
+    def __init__(self, job_id: str, user_id: int, account_key: str, thread: threading.Thread) -> None:
         self.job_id = job_id
+        self.user_id = user_id
+        self.account_key = account_key
         self.thread = thread
         self.cancel = threading.Event()
 
 
 class SendEngine:
-    """Runs sends in background threads: one at a time per user, users in parallel."""
+    """Runs sends in background threads, independent of the browser session (logging out does not stop them).
+
+    A user may run several sends at once, each through a different SMTP account; one SMTP account is
+    never used by two sends at the same time, so its sending pace and provider limits are respected.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._workers: dict[int, _Worker] = {}  # user_id -> worker
+        self._workers: dict[str, _Worker] = {}  # job_id -> worker
         self._local = threading.local()
 
     @property
     def _cancel(self) -> threading.Event:
         return self._local.cancel
 
+    def _alive(self) -> list[_Worker]:
+        self._workers = {k: w for k, w in self._workers.items() if w.thread.is_alive()}
+        return list(self._workers.values())
+
     # -- control
 
     def busy(self, user_id: int | None = None) -> bool:
         with self._lock:
-            workers = [self._workers.get(user_id)] if user_id is not None else list(self._workers.values())
-        return any(w is not None and w.thread.is_alive() for w in workers)
+            return any(user_id is None or w.user_id == user_id for w in self._alive())
 
-    def start(self, job_id: str, user_id: int) -> None:
+    def check_can_start(self, user_id: int, account_key: str) -> None:
+        """Raise RuntimeError with a user-facing reason if a new send cannot start now."""
         with self._lock:
-            current = self._workers.get(user_id)
-            if current is not None and current.thread.is_alive():
-                raise RuntimeError("You already have a send in progress.")
+            self._check(user_id, account_key)
+
+    def _check(self, user_id: int, account_key: str) -> None:
+        alive = self._alive()
+        if any(w.account_key == account_key for w in alive):
+            raise RuntimeError("This SMTP account is already sending. Wait for that send to finish, "
+                               "or enter a different SMTP account.")
+        if sum(w.user_id == user_id for w in alive) >= settings.max_parallel_sends:
+            raise RuntimeError(f"You can run at most {settings.max_parallel_sends} sends at the same time.")
+
+    def start(self, job_id: str, user_id: int, account_key: str) -> None:
+        with self._lock:
+            self._check(user_id, account_key)
             thread = threading.Thread(target=self._run, args=(job_id,), name=f"send-{job_id}", daemon=True)
-            worker = _Worker(job_id, thread)
-            self._workers[user_id] = worker
+            self._workers[job_id] = _Worker(job_id, user_id, account_key, thread)
             thread.start()
+
+    def discard(self, job_id: str, reason: str) -> None:
+        """Close a job that was created but could not be started."""
+        self._mark_remaining(job_id, "Not sent (not started)")
+        self._update_job(job_id, status="failed", status_text=f"Not started: {reason}", finished_at=now_iso(),
+                         smtp_enc=None)
 
     def cancel(self, job_id: str, user_id: int) -> bool:
         with self._lock:
-            worker = self._workers.get(user_id)
-        if worker is not None and worker.job_id == job_id and worker.thread.is_alive():
+            worker = self._workers.get(job_id)
+        if worker is not None and worker.user_id == user_id and worker.thread.is_alive():
             worker.cancel.set()
             return True
         return False
@@ -392,7 +445,7 @@ class SendEngine:
 
     def _run(self, job_id: str) -> None:
         with self._lock:
-            self._local.cancel = next(w.cancel for w in self._workers.values() if w.job_id == job_id)
+            self._local.cancel = self._workers[job_id].cancel
         try:
             self._process(job_id)
         except Exception:  # never leave a job stuck in "running"
@@ -400,6 +453,8 @@ class SendEngine:
             self._mark_remaining(job_id, "Not sent (internal error)")
             self._update_job(job_id, status="failed", status_text="Stopped because of an internal error.",
                              finished_at=now_iso())
+        finally:
+            self._update_job(job_id, smtp_enc=None)  # don't keep a copy of the credentials once finished
 
     def _process(self, job_id: str) -> None:
         with get_db() as conn:
@@ -407,9 +462,10 @@ class SendEngine:
         payload = json.loads(job["payload"])
         compose = Compose(**payload["compose"])
         user_id = job["user_id"]
-        cfg = config_store.load(user_id)
+        # The SMTP settings the send was started with; later changes in the form don't affect it.
+        cfg = (job["smtp_enc"] and config_store.from_snapshot(job["smtp_enc"])) or config_store.load(user_id)
         attachments = [(a, a.read()) for a in get_many(user_id, payload["attachment_ids"])]
-        delay = settings.speed_delays.get(job["speed"], settings.speed_delays["conservative"])
+        delay = batch_delay(job["speed"], payload.get("conservative_delay"))
         message_delay = settings.message_delays.get(job["speed"], settings.message_delays["conservative"])
         total_batches = job["total_batches"]
         transport = get_transport(cfg)

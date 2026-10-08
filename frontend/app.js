@@ -45,6 +45,7 @@ async function api(path, { method = "GET", body, form } = {}) {
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
+    if (v === false || v == null) continue;  // boolean attributes such as disabled
     if (k === "class") node.className = v;
     else if (k === "text") node.textContent = v;
     else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
@@ -601,10 +602,18 @@ function sendPayload(confirm = false) {
     recipients_text: $("recipients").value,
     batch_size: Number($("batch-size").value) || state.config.default_batch_size,
     speed: $("speed").value,
+    conservative_delay: $("speed").value === "conservative" ? Number($("conservative-delay").value) : null,
     delivery: $("delivery").value,
     attachment_ids: attachmentIds(),
     confirm,
   };
+}
+
+function fmtDuration(seconds) {
+  if (seconds < 1) return `${seconds.toFixed(1)} s`;
+  if (seconds < 60) return `${Math.round(seconds)} s`;
+  const m = Math.round(seconds / 60);
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
 }
 
 function updateBatchInfo() {
@@ -615,8 +624,14 @@ function updateBatchInfo() {
   $("batch-info").textContent = ready
     ? `${fmt(ready)} recipients → ${fmt(batches)} batch${batches === 1 ? "" : "es"} (max ${state.config.max_batch_size})`
     : `Max ${state.config.max_batch_size} per message.`;
-  const delay = state.config.speeds[$("speed").value];
-  $("speed-info").textContent = `${delay >= 1 ? delay.toFixed(0) : delay.toFixed(1)} s pause between batches`;
+  const conservative = $("speed").value === "conservative";
+  $("conservative-delay-field").hidden = !conservative;
+  const delay = conservative
+    ? Number($("conservative-delay").value) * state.config.delay_scale
+    : state.config.speeds[$("speed").value];
+  const batchesLeft = Math.max(0, Math.ceil(ready / size) - 1);
+  $("speed-info").textContent = `${fmtDuration(delay)} pause between batches`
+    + (batchesLeft ? ` (≈ ${fmtDuration(batchesLeft * delay)} of pauses in total)` : "");
   const individual = $("delivery").value === "individual" || $("personalize").checked;
   const per = state.config.message_delays[$("speed").value];
   $("delivery-info").textContent = individual
@@ -664,7 +679,7 @@ function openConfirm(s) {
     ["Subject", s.subject],
     ["Attachments", s.attachments.length ? s.attachments.join(", ") : "none"],
     ["Email size", s.size],
-    ["Sending mode", `${s.speed} (${s.delay_seconds}s between batches)`],
+    ["Sending mode", `${s.speed} (${fmtDuration(s.delay_seconds)} between batches)`],
     ["Mode", s.email_mode === "development" ? "DEVELOPMENT – goes to test mailbox only" : "PRODUCTION – real emails"],
   ];
   $("confirm-summary").replaceChildren(...rows.flatMap(([k, v]) => [el("dt", { text: k }), el("dd", { text: v })]));
@@ -686,6 +701,7 @@ async function onConfirmSend() {
     $("confirm-dialog").close();
     state.jobId = res.job_id;
     startPolling();
+    loadActiveJobs();
   } catch (err) {
     $("confirm-warnings").replaceChildren(el("li", { class: "error", text: err.message }));
   } finally {
@@ -721,6 +737,7 @@ async function pollJob() {
 
 function renderJob(job) {
   $("progress-card").hidden = false;
+  $("progress-account").textContent = `“${job.subject}” via ${job.smtp_account}`;
   const titles = { completed: "SENDING COMPLETE", cancelled: "SENDING STOPPED", failed: "SENDING STOPPED", interrupted: "SENDING INTERRUPTED" };
   $("progress-title").textContent = titles[job.status] || "Sending…";
   const bar = $("progress-bar");
@@ -736,7 +753,22 @@ function renderJob(job) {
   $("done-actions").hidden = !job.finished;
   $("export-failed-btn").href = `/api/jobs/${job.id}/export?status=failed`;
   $("export-all-btn").href = `/api/jobs/${job.id}/export`;
-  $("send-btn").disabled = !job.finished;
+}
+
+/* Every send still running for this user, including ones started before logging out. */
+async function loadActiveJobs() {
+  clearTimeout(state.activeTimer);
+  let jobs = [];
+  try { jobs = await api("/api/jobs/active"); } catch (_) { /* retry below */ }
+  $("active-card").hidden = !jobs.length;
+  $("active-list").replaceChildren(...jobs.map((job) => el("li", { class: job.id === state.jobId ? "viewing" : "" },
+    el("div", { class: "job-name" }, el("strong", { text: job.subject || "(no subject)" }), el("br"),
+      el("small", { class: "muted", text: `${job.smtp_account} · ${fmt(job.completed)} / ${fmt(job.total)} · ${job.status_text || job.status}` })),
+    el("div", { class: "progress" }, el("div", { class: "progress-bar", style: `width:${job.percent}%` })),
+    el("button", { class: "btn", type: "button", text: job.id === state.jobId ? "Viewing" : "View",
+      disabled: job.id === state.jobId, onclick: () => { state.jobId = job.id; startPolling(); loadActiveJobs(); } }),
+  )));
+  state.activeTimer = setTimeout(loadActiveJobs, jobs.length ? 3000 : 15000);
 }
 
 async function onCancelJob() {
@@ -847,6 +879,7 @@ async function startApp() {
     state.jobId = latest.id;
     if (!latest.finished) startPolling(); else renderJob(latest);
   }
+  loadActiveJobs();
 }
 
 function bind() {
@@ -877,6 +910,7 @@ function bind() {
   $("attach-input").addEventListener("change", onAttach);
   $("batch-size").addEventListener("input", updateBatchInfo);
   $("speed").addEventListener("change", updateBatchInfo);
+  $("conservative-delay").addEventListener("change", updateBatchInfo);
   $("test-btn").addEventListener("click", onSendTest);
   $("send-btn").addEventListener("click", onSendClick);
   $("confirm-cancel").addEventListener("click", () => $("confirm-dialog").close());

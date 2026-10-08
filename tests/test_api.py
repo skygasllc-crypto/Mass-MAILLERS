@@ -3,6 +3,8 @@ import csv
 import io
 import time
 
+import pytest
+
 from backend.app.config import settings
 from backend.app.utils.security import SESSION_COOKIE
 
@@ -179,13 +181,14 @@ def test_full_workflow_1000_recipients(auth_client):
     assert c.get("/api/jobs/latest").json()["id"] == job_id
 
 
-def test_only_one_job_at_a_time(auth_client, monkeypatch):
+def test_one_send_per_smtp_account(auth_client, monkeypatch):
     monkeypatch.setattr(settings, "speed_delays", {"conservative": 5, "normal": 5, "fast": 5})
     auth_client.put("/api/smtp", json={"from_email": "news@example.com"})
     payload = {"compose": {"subject": "S", "body": "B"}, "recipients_text": "a@example.com b@example.com",
                "batch_size": 1, "speed": "fast", "confirm": True}
     job_id = auth_client.post("/api/send", json=payload).json()["job_id"]
-    assert auth_client.post("/api/send", json=payload).status_code == 409
+    res = auth_client.post("/api/send", json=payload)
+    assert res.status_code == 409 and "already sending" in res.json()["detail"]
     deadline = time.time() + 20  # wait until the first batch is out, then stop the rest
     while auth_client.get(f"/api/jobs/{job_id}").json()["successful"] < 1 and time.time() < deadline:
         time.sleep(0.1)
@@ -193,6 +196,53 @@ def test_only_one_job_at_a_time(auth_client, monkeypatch):
     job = wait_for_job(auth_client, job_id)
     assert job["status"] == "cancelled"
     assert job["successful"] == 1 and job["not_sent"] == 1
+
+
+def test_sends_continue_after_logout_and_use_their_own_smtp_account(auth_client, monkeypatch):
+    from backend.app.db import get_db
+
+    monkeypatch.setattr(settings, "speed_delays", {"conservative": 2, "normal": 2, "fast": 2})
+    payload = {"compose": {"subject": "S", "body": "B"}, "recipients_text": "a@example.com b@example.com",
+               "batch_size": 1, "speed": "fast", "confirm": True}
+
+    auth_client.put("/api/smtp", json={"username": "first@example.com", "password": "pw1",
+                                       "from_email": "first@example.com"})
+    first = auth_client.post("/api/send", json=payload).json()["job_id"]
+    # Same user, different SMTP account: a second send runs alongside the first.
+    auth_client.put("/api/smtp", json={"username": "second@example.com", "password": "pw2",
+                                       "from_email": "second@example.com"})
+    second = auth_client.post("/api/send", json=payload).json()["job_id"]
+
+    auth_client.post("/api/auth/logout")
+    assert auth_client.get("/api/jobs/active").status_code == 401
+    res = auth_client.post("/api/auth/login", json=ADMIN_LOGIN)
+    auth_client.headers["X-CSRF-Token"] = res.json()["csrf"]
+    active = {j["id"]: j for j in auth_client.get("/api/jobs/active").json()}
+    assert set(active) == {first, second}  # still sending after logout
+
+    jobs = {j: wait_for_job(auth_client, j) for j in (first, second)}
+    assert all(j["status"] == "completed" and j["successful"] == 2 for j in jobs.values())
+    assert jobs[first]["smtp_account"].startswith("first@example.com")
+    assert jobs[second]["smtp_account"].startswith("second@example.com")
+    assert auth_client.get("/api/jobs/active").json() == []
+    senders = [m["envelope_from"] for m in auth_client.get("/api/dev/outbox").json()]
+    assert sorted(senders) == ["first@example.com"] * 2 + ["second@example.com"] * 2
+    with get_db() as conn:  # the copy of the SMTP credentials is dropped when a send ends
+        assert conn.execute("SELECT COUNT(*) FROM jobs WHERE smtp_enc IS NOT NULL").fetchone()[0] == 0
+
+
+def test_parallel_send_limit(auth_client, monkeypatch):
+    monkeypatch.setattr(settings, "speed_delays", {"conservative": 5, "normal": 5, "fast": 5})
+    monkeypatch.setattr(settings, "max_parallel_sends", 1)
+    payload = {"compose": {"subject": "S", "body": "B"}, "recipients_text": "a@example.com b@example.com",
+               "batch_size": 1, "speed": "fast", "confirm": True}
+    auth_client.put("/api/smtp", json={"from_email": "one@example.com"})
+    job_id = auth_client.post("/api/send", json=payload).json()["job_id"]
+    auth_client.put("/api/smtp", json={"from_email": "two@example.com"})
+    res = auth_client.post("/api/send", json=payload)
+    assert res.status_code == 409 and "at most 1" in res.json()["detail"]
+    auth_client.post(f"/api/jobs/{job_id}/cancel")
+    wait_for_job(auth_client, job_id)
 
 
 def test_client_ip_behind_proxy(client, monkeypatch):
@@ -216,3 +266,22 @@ def test_login_limited_per_account(client, monkeypatch):
         client.headers["X-Forwarded-For"] = f"9.9.9.{i}"
         client.post("/api/auth/login", json={"email": "admin", "password": "wrong"})
     assert client.post("/api/auth/login", json=ADMIN_LOGIN).status_code == 429
+
+
+def test_ten_thousand_recipients_accepted(auth_client):
+    text = "\n".join(f"u{i}@example.com" for i in range(10_000))
+    data = auth_client.post("/api/recipients/parse", json={"text": text}).json()
+    assert data["stats"]["ready"] == 10_000
+    assert data["over_limit"] is False
+
+
+def test_conservative_delay_in_summary(auth_client):
+    auth_client.put("/api/smtp", json={"host": "smtp.example.com", "port": 587, "security": "starttls",
+                                       "username": "u", "password": "p", "from_email": "news@example.com"})
+    body = {"compose": {"subject": "Hi", "body": "Hello"}, "recipients_text": "a@example.com",
+            "speed": "conservative", "conservative_delay": 300}
+    s = auth_client.post("/api/send/prepare", json=body).json()
+    assert s["delay_seconds"] == pytest.approx(300 * settings.delay_scale)
+    body["conservative_delay"] = 45
+    s = auth_client.post("/api/send/prepare", json=body).json()
+    assert not s["ok"] and any("conservative pause" in e for e in s["errors"])

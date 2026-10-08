@@ -16,6 +16,8 @@ log = logging.getLogger("mailer")
 
 # Seconds to wait between BCC batches for each sending mode.
 SPEED_DELAYS = {"conservative": 30.0, "normal": 10.0, "fast": 3.0}
+# Pauses (seconds) the user can pick for conservative mode: 10s, 30s, 1m, 2m, 5m, 10m, 20m.
+CONSERVATIVE_DELAY_CHOICES = (10, 30, 60, 120, 300, 600, 1200)
 # Seconds between individual messages ("individual" delivery / personalization). Microsoft 365, for
 # example, allows about 30 messages per minute, so conservative stays at one message every 2 s.
 MESSAGE_DELAYS = {"conservative": 2.0, "normal": 1.0, "fast": 0.5}
@@ -75,7 +77,8 @@ class Settings:
     trusted_proxy_hops: int = 0  # reverse proxies in front of the app (Render: 1)
     session_hours: int = 12
 
-    max_recipients: int = 1000
+    max_recipients: int = 10000
+    max_parallel_sends: int = 50  # per user, each through a different SMTP account
     default_batch_size: int = 100
     max_batch_size: int = 500  # hard cap: never put more than this many RCPTs in one message
     max_attachment_mb: float = 10
@@ -90,6 +93,7 @@ class Settings:
     retry_delay: float = 60.0
     speed_delays: dict[str, float] = field(default_factory=dict)
     message_delays: dict[str, float] = field(default_factory=dict)
+    delay_scale: float = 1.0  # development mode shortens every pause tenfold
 
     @property
     def is_development(self) -> bool:
@@ -155,7 +159,8 @@ def load_settings() -> Settings:
         cookie_secure=_bool("COOKIE_SECURE", not dev),
         trusted_proxy_hops=_int("TRUSTED_PROXY_HOPS", 0),
         session_hours=_int("SESSION_HOURS", 12),
-        max_recipients=_int("MAX_RECIPIENTS", 1000),
+        max_recipients=_int("MAX_RECIPIENTS", 10000),
+        max_parallel_sends=_int("MAX_PARALLEL_SENDS", 50),
         default_batch_size=_int("DEFAULT_BATCH_SIZE", 100),
         max_batch_size=_int("SMTP_MAX_RECIPIENTS_PER_MESSAGE", 500),
         max_attachment_mb=_float("MAX_ATTACHMENT_MB", 10),
@@ -169,6 +174,7 @@ def load_settings() -> Settings:
         retry_delay=_float("RETRY_DELAY_SECONDS", 1.0 if dev else 60.0),
         speed_delays=delays,
         message_delays=message_delays,
+        delay_scale=scale,
     )
 
 

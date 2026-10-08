@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, 
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from ..attachments import store as attachment_store
-from ..config import settings
+from ..config import CONSERVATIVE_DELAY_CHOICES, settings
 from ..db import get_db
 from ..email_templates import store as template_store
 from ..models.schemas import (
@@ -23,7 +23,8 @@ from ..models.schemas import (
 from ..recipients import suppression
 from ..recipients.parser import ParseResult, is_valid_email, parse_csv, parse_text, to_text
 from ..sending.engine import (
-    SendRequest, create_job, engine, job_progress, job_results, latest_job_id, prepare, send_test,
+    SendRequest, active_job_ids, attachments_in_use, create_job, engine, job_progress, job_results, latest_job_id,
+    prepare, send_test,
 )
 from ..sending.message import Compose, MessageError, build_message, message_bytes
 from ..smtp import config_store
@@ -146,12 +147,15 @@ def app_config(user: User = Depends(require_session)):
         "user": {"id": user.id, "email": user.email, "role": user.role,
                  "main_admin": user.email == settings.admin_email},
         "max_recipients": settings.max_recipients,
+        "max_parallel_sends": settings.max_parallel_sends,
         "default_batch_size": settings.default_batch_size,
         "max_batch_size": settings.max_batch_size,
         "max_attachment_mb": settings.max_attachment_mb,
         "max_message_mb": settings.max_message_mb,
         "allowed_extensions": sorted(settings.allowed_extensions),
         "speeds": settings.speed_delays,
+        "conservative_delays": list(CONSERVATIVE_DELAY_CHOICES),
+        "delay_scale": settings.delay_scale,
         "message_delays": settings.message_delays,
     }
 
@@ -261,8 +265,8 @@ async def attachments_upload(request: Request, file: UploadFile = File(...), use
 
 @api.delete("/attachments/{att_id}")
 def attachments_delete(att_id: str, user: User = Depends(require_session)):
-    if engine.busy(user.id):
-        raise HTTPException(status_code=409, detail="Attachments cannot be removed while sending.")
+    if att_id in attachments_in_use(user.id):
+        raise HTTPException(status_code=409, detail="This attachment is used by a send that is still running.")
     if not attachment_store.delete(user.id, att_id):
         raise HTTPException(status_code=404, detail="Attachment not found.")
     return {"ok": True}
@@ -282,6 +286,7 @@ def _send_request(user_id: int, body: SendIn) -> SendRequest:
     return SendRequest(
         user_id=user_id, compose=_compose(body), recipients=recipients,
         batch_size=body.batch_size, speed=body.speed, attachment_ids=body.attachment_ids,
+        conservative_delay=body.conservative_delay if body.speed == "conservative" else None,
     )
 
 
@@ -323,16 +328,20 @@ def send_start(body: SendIn, request: Request, user: User = Depends(require_sess
     rate_limit(request, "send", limit=10, window=60)
     if not body.confirm:
         raise HTTPException(status_code=400, detail="Sending must be confirmed.")
-    if engine.busy(user.id):
-        raise HTTPException(status_code=409, detail="You already have a send in progress.")
+    account_key = config_store.load(user.id).account_key
+    try:
+        engine.check_can_start(user.id, account_key)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     req = _send_request(user.id, body)
     summary = prepare(req)
     if not summary["ok"]:
         raise HTTPException(status_code=422, detail=summary["errors"][0])
     job_id = create_job(req)
     try:
-        engine.start(job_id, user.id)
-    except RuntimeError as exc:
+        engine.start(job_id, user.id, account_key)
+    except RuntimeError as exc:  # another send grabbed the account in the meantime
+        engine.discard(job_id, str(exc))
         raise HTTPException(status_code=409, detail=str(exc))
     return {"ok": True, "job_id": job_id}
 
@@ -404,6 +413,12 @@ def _job_or_404(job_id: str, user_id: int) -> dict:
 def jobs_latest(user: User = Depends(require_session)):
     job_id = latest_job_id(user.id)
     return job_progress(job_id) if job_id else None
+
+
+@api.get("/jobs/active")
+def jobs_active(user: User = Depends(require_session)):
+    """Sends still running for this user (they keep running after logout)."""
+    return [p for p in (job_progress(j) for j in active_job_ids(user.id)) if p]
 
 
 @api.get("/jobs/{job_id}")
